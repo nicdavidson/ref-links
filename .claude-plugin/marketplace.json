@@ -1,0 +1,13 @@
+{
+  "name": "ref-links",
+  "owner": {
+    "name": "ref-links contributors"
+  },
+  "description": "ref-links: labelled links for issues, pull requests and tracker items in Claude's replies",
+  "plugins": [
+    {
+      "name": "ref-links",
+      "source": "./"
+    }
+  ]
+}

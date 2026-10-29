@@ -1,0 +1,9 @@
+{
+  "name": "ref-links",
+  "version": "0.1.0",
+  "description": "Makes Claude link every GitHub issue, pull request and tracker item it mentions (Jira, Linear, Plane, ...), with a short label",
+  "author": {
+    "name": "ref-links contributors"
+  },
+  "license": "MIT"
+}

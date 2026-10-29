@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Print first-mention links for issues, pull requests and tracker items.
+
+    links 1234 ABC-123
+    -> [#1234](<GitHub link>) (<label>)
+       [ABC-123](<tracker link>) (<label>)
+
+Issue and pull request labels come from GitHub titles (via gh, cached). Tracker labels come from
+~/.config/ref-links/items.tsv; a missing one prints (?), so write your own short label.
+Settings: see the README.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+import links  # noqa: E402
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        print(__doc__.strip())
+        return 2
+    if not links.CONFIGURED:
+        print(f"ref-links is not set up: put REF_LINKS_REPO or REF_LINKS_ITEMS in {links.CONFIG_DIR / 'config'}",
+              file=sys.stderr)
+        return 1
+    for arg in argv:
+        key = arg.strip().lstrip("#").upper()
+        prefix, _, number = key.partition("-")
+        if prefix in links.TRACKERS and number.isdigit():
+            print(f"[{key}]({links.item_url(prefix, number)}) ({links.item_label(key) or '?'})")
+        elif key.isdigit() and links.REPO:
+            label = links.gh_label(key)
+            if label == links.NOT_FOUND:
+                print(f"#{key}: {links.REPO} has no such issue or pull request", file=sys.stderr)
+            else:
+                print(f"[#{key}]({links.gh_url(key)}) ({label or '?'})")
+        else:
+            known = ", ".join(f"{p}-n" for p in links.TRACKERS) or "none set"
+            print(f"{arg}: not an issue number or a known tracker id ({known})", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
