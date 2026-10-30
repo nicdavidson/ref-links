@@ -65,9 +65,17 @@ class GitHubRule(unittest.TestCase):
 
     def test_bare_or_unlabelled_first_mention_is_named(self):
         self.assertEqual(links.gh_problems("see #1210 and #88"),
-                         [("1210", "first mention has no link"), ("88", "first mention has no link")])
-        self.assertEqual(links.gh_problems(f"[#1210]({PR}) is ready"), [("1210", "no label")])
-        self.assertEqual(links.gh_problems(f"| [#1207]({PR}) | (run listing) |"), [("1207", "no label")])
+                         [("example-org/example-repo#1210", "first mention has no link"), ("example-org/example-repo#88", "first mention has no link")])
+        self.assertEqual(links.gh_problems(f"[#1210]({PR}) is ready"), [("example-org/example-repo#1210", "no label")])
+        self.assertEqual(links.gh_problems(f"| [#1207]({PR}) | (run listing) |"), [("example-org/example-repo#1207", "no label")])
+
+    def test_other_repositories_by_name(self):
+        self.assertEqual(links.gh_problems("see acme/tool#5 and acme/tool#5 again"),
+                         [("acme/tool#5", "first mention has no link")])
+        self.assertEqual(links.gh_problems("[acme/tool#5](https://github.com/acme/tool/pull/5) (fix login)"), [])
+        self.assertEqual(links.display("acme/tool#5"), "acme/tool#5")
+        self.assertEqual(links.display("example-org/example-repo#5"), "#5")
+        self.assertEqual(links.gh_url("acme/tool#5"), "https://github.com/acme/tool/issues/5")
 
     def test_not_references(self):
         for text in ("x#1210", "a/#1210", "&#1234;", "##123 heading", "https://e.com/?#1234", "page?x=#1234",
@@ -93,8 +101,10 @@ def said(role: str, text, **extra) -> dict:
 class Hooks(unittest.TestCase):
     def setUp(self):
         links.CACHE.mkdir(parents=True, exist_ok=True)
-        links.GH_TITLES.write_text(f"1210\tHTTP API\tServe operations over HTTP\t{PR}\n"
-                                   f"88\tlogin bug\tLogin fails\t{ISSUE}\n000\t\t\t\n", encoding="utf-8")
+        links.GH_TITLES.write_text(f"example-org/example-repo#1210\tHTTP API\tServe operations over HTTP\t{PR}\n"
+                                   f"example-org/example-repo#88\tlogin bug\tLogin fails\t{ISSUE}\nexample-org/example-repo#000\t\t\t\n"
+                                   "acme/tool#5\tfix login\tFix login\thttps://github.com/acme/tool/pull/5\n",
+                                   encoding="utf-8")
 
     def run_check(self, hook: dict, env=None) -> str:
         ran = subprocess.run([sys.executable, str(ROOT / "hooks/check.py")], input=json.dumps(hook),
@@ -159,6 +169,32 @@ class Hooks(unittest.TestCase):
         self.assertIn("[OPS-4](https://t.example/OPS-4)", out["reason"])
         self.assertNotIn("#12", out["reason"])  # no repository: numbers are not references
 
+    def auto_env(self, cwd_remote=None):
+        cfg, bin_dir = tempfile.mkdtemp(), tempfile.mkdtemp()
+        Path(cfg, "ref-links").mkdir()
+        Path(cfg, "ref-links", "config").write_text("REF_LINKS_REPO=auto\n")
+        os.symlink(shutil.which("git"), Path(bin_dir, "git"))
+        cwd = tempfile.mkdtemp()
+        if cwd_remote:
+            subprocess.run(["git", "init", "-q", cwd], check=True)
+            subprocess.run(["git", "-C", cwd, "remote", "add", "origin", cwd_remote], check=True)
+        env = {**{k: v for k, v in NO_GH.items() if k != "REF_LINKS_ALWAYS"}, "XDG_CONFIG_HOME": cfg, "PATH": bin_dir}
+        return env, cwd
+
+    def test_auto_uses_the_checkouts_repository(self):
+        env, cwd = self.auto_env("https://github.com/acme/tool.git")
+        out = json.loads(self.run_check({"last_assistant_message": "#5 merged", "cwd": cwd}, env))
+        self.assertIn("[#5](https://github.com/acme/tool/pull/5) (fix login)", out["systemMessage"])
+
+    def test_auto_outside_a_checkout_takes_named_references_only(self):
+        env, cwd = self.auto_env()
+        self.assertEqual(self.run_check({"last_assistant_message": "#5 is the #1 priority", "cwd": cwd}, env), "")
+        out = json.loads(self.run_check({"last_assistant_message": "acme/tool#5 merged", "cwd": cwd}, env))
+        self.assertIn("[acme/tool#5](https://github.com/acme/tool/pull/5) (fix login)", out["systemMessage"])
+        ran = subprocess.run([sys.executable, str(ROOT / "hooks/remind.py")], input=json.dumps({"cwd": cwd}),
+                             capture_output=True, text=True, env=env)
+        self.assertIn("owner/name#123", json.loads(ran.stdout)["hookSpecificOutput"]["additionalContext"])
+
     def test_bad_input_never_fails_the_session(self):
         path = transcript("not json", {"type": "assistant", "message": "oops"},
                           {"type": "assistant", "message": {"content": [{"type": "text", "text": None}]}}, said("assistant", "ABC-1"))
@@ -183,8 +219,8 @@ class Hooks(unittest.TestCase):
             "[ABC-123](https://acme.atlassian.net/browse/ABC-123) (short label)",
             "[ENG-7](https://linear.app/acme/issue/ENG-7) (lower key)",
         ])
-        self.assertIn("no such issue or pull request", ran.stderr)
-        self.assertIn("ZZZ-1: not an issue number or a known tracker id", ran.stderr)
+        self.assertIn("GitHub has no such issue or pull request", ran.stderr)
+        self.assertIn("ZZZ-1: not an issue reference or a known tracker id", ran.stderr)
 
     def test_does_nothing_until_set_up(self):
         env = {**NO_GH, "XDG_CONFIG_HOME": tempfile.mkdtemp()}

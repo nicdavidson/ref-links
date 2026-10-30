@@ -9,9 +9,8 @@ ref-links needs at least one of two values in `~/.config/ref-links/config` befor
 
 ## 1. The GitHub repository: `REF_LINKS_REPO`
 
-The repository that bare `#123` numbers belong to, as `owner/name`. Optional: leave it out if the person only wants tracker links.
-- If the current folder is a git checkout, run `gh repo view --json nameWithOwner -q .nameWithOwner`.
-- Otherwise ask which checkout holds the main repository, and run it there.
+What a bare `#123` means. Recommend `auto`: the GitHub repository of whatever checkout the session is in, and outside a checkout Claude writes `owner/name#123` for the repository under discussion. Use a fixed `owner/name` only when the person wants every `#123` to mean one repository; the rule is then on only in checkouts under that owner. Leave it out if the person only wants tracker links.
+- To show what `auto` resolves to here, run `gh repo view --json nameWithOwner -q .nameWithOwner` in the current folder (it fails outside a checkout; that is fine).
 - If `gh` is missing or not signed in, say so: issue and pull request labels need it (`gh auth login`).
 
 ## 2. Trackers: `REF_LINKS_ITEMS`
@@ -38,7 +37,7 @@ mkdir -p ~/.config/ref-links
 Write `~/.config/ref-links/config`:
 
 ```
-REF_LINKS_REPO=<owner/name>
+REF_LINKS_REPO=<auto or owner/name>
 REF_LINKS_ITEMS=<PREFIX=URL with {n}> <PREFIX=URL with {n}>
 ```
 
@@ -55,4 +54,4 @@ Labels for tracker items live in `~/.config/ref-links/items.tsv`, one row per it
 
 Find the plugin's `bin/links` (`find ~/.claude/plugins -path '*ref-links*/bin/links'`) and run it with a recent issue or pull request number and a tracker id, for example `python3 <path>/bin/links <number> <PREFIX>-<n>`. Each should print as a link with a label. Show the person the output.
 
-Tell them where the rule is on: in checkouts of repositories under the configured repository's owner (everywhere when only trackers are set, or with `REF_LINKS_ALWAYS=1`). The hooks read the config on every reply, so it takes effect at once; only a plugin installed during this session needs `/reload-plugins` or a new session before its hooks run.
+Tell them where the rule is on: everywhere with `auto` or trackers only; with a fixed repository, in checkouts under its owner (or everywhere with `REF_LINKS_ALWAYS=1`). The hooks read the config on every reply, so it takes effect at once; only a plugin installed during this session needs `/reload-plugins` or a new session before its hooks run.

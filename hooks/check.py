@@ -54,13 +54,13 @@ def verdict(reply: str) -> dict | None:
         unknown |= label == "?"
         prefix, number = ref.split("-", 1)
         lines.append(f"[{ref}]({links.item_url(prefix, number)}) ({label}) [{issue}]")
-    for number, issue in dict.fromkeys(refs):
-        label = links.gh_label(number, deadline)
+    for ref, issue in dict.fromkeys(refs):
+        label = links.gh_label(ref, deadline)
         if label == links.NOT_FOUND:
             continue  # GitHub has no such issue or pull request: a number, not a reference
         if label is None:
             label, unknown = "?", True
-        lines.append(f"[#{number}]({links.gh_url(number)}) ({label}) [{issue}]")
+        lines.append(f"[{links.display(ref)}]({links.gh_url(ref)}) ({label}) [{issue}]")
     if not lines:
         return None
     if unknown:

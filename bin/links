@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Print first-mention links for issues, pull requests and tracker items.
 
-    links 1234 ABC-123
-    -> [#1234](<GitHub link>) (<label>)
+    links 1234 owner/name#56 ABC-123
+    -> [#1234](<GitHub link>) (<label>)            1234 is in this checkout's (or the configured) repository
+       [owner/name#56](<GitHub link>) (<label>)
        [ABC-123](<tracker link>) (<label>)
 
 Issue and pull request labels come from GitHub titles (via gh, cached). Tracker labels come from
 ~/.config/ref-links/items.tsv; a missing one prints (?), so write your own short label.
 Settings: see the README.
 """
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -21,23 +24,34 @@ def main(argv: list[str]) -> int:
         print(__doc__.strip())
         return 2
     if not links.CONFIGURED:
-        print(f"ref-links is not set up: put REF_LINKS_REPO or REF_LINKS_ITEMS in {links.CONFIG_DIR / 'config'}",
+        print(f"ref-links is not set up: put REF_LINKS_REPO (owner/name or auto) or REF_LINKS_ITEMS in {links.CONFIG_DIR / 'config'}",
               file=sys.stderr)
         return 1
+    links.use(os.getcwd())
     for arg in argv:
-        key = arg.strip().lstrip("#").upper()
+        arg = arg.strip()
+        qualified = re.fullmatch(rf"({links.NAME})#(\d+)", arg)
+        key = arg.lstrip("#").upper()
         prefix, _, number = key.partition("-")
         if prefix in links.TRACKERS and number.isdigit():
             print(f"[{key}]({links.item_url(prefix, number)}) ({links.item_label(key) or '?'})")
+            continue
+        if qualified:
+            ref = arg
         elif key.isdigit() and links.REPO:
-            label = links.gh_label(key)
-            if label == links.NOT_FOUND:
-                print(f"#{key}: {links.REPO} has no such issue or pull request", file=sys.stderr)
-            else:
-                print(f"[#{key}]({links.gh_url(key)}) ({label or '?'})")
+            ref = f"{links.REPO}#{key}"
+        elif key.isdigit():
+            print(f"{arg}: no repository here; write owner/name#{key}", file=sys.stderr)
+            continue
         else:
             known = ", ".join(f"{p}-n" for p in links.TRACKERS) or "none set"
-            print(f"{arg}: not an issue number or a known tracker id ({known})", file=sys.stderr)
+            print(f"{arg}: not an issue reference or a known tracker id ({known})", file=sys.stderr)
+            continue
+        label = links.gh_label(ref)
+        if label == links.NOT_FOUND:
+            print(f"{arg}: GitHub has no such issue or pull request", file=sys.stderr)
+        else:
+            print(f"[{links.display(ref)}]({links.gh_url(ref)}) ({label or '?'})")
     return 0
 
 

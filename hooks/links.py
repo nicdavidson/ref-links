@@ -1,11 +1,12 @@
 """Shared by the hooks and bin/links: where references link to, their labels, and the rule check.
 
 Settings come from ~/.config/ref-links/config (KEY=value lines); the environment overrides them:
-  REF_LINKS_REPO    GitHub repository that bare #123 numbers belong to, as owner/name
+  REF_LINKS_REPO    GitHub repository that bare #123 numbers belong to, as owner/name, or `auto`:
+                    the current checkout's GitHub repository (origin). owner/name#123 works either way.
   REF_LINKS_ITEMS   tracker prefixes and URL templates, space separated, {n} is the number:
                     ABC=https://acme.atlassian.net/browse/ABC-{n} OPS=https://linear.app/acme/issue/OPS-{n}
-  REF_LINKS_ALWAYS  1 to apply the rule in every folder, not only in checkouts of the repository's owner
-The rule is on once REF_LINKS_REPO or REF_LINKS_ITEMS is set.
+  REF_LINKS_ALWAYS  1 to apply the rule in every folder, not only in checkouts of a fixed repository's owner
+The rule is on once REF_LINKS_REPO or REF_LINKS_ITEMS is set; with `auto` or trackers only, it is on everywhere.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from pathlib import Path
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ref-links"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ref-links"
 ITEM_TITLES = CONFIG_DIR / "items.tsv"
-GH_TITLES = CACHE / "github-titles.tsv"
+GH_TITLES = CACHE / "github-refs.tsv"  # owner/name#n, label, title, url
 
 
 def _settings() -> dict[str, str]:
@@ -37,11 +38,13 @@ def _settings() -> dict[str, str]:
 
 
 SETTINGS = _settings()
-REPO = SETTINGS.get("REF_LINKS_REPO", "").strip("/")
-REPO = REPO if REPO.count("/") == 1 else ""
+REPO_SETTING = SETTINGS.get("REF_LINKS_REPO", "").strip("/")
+AUTO = REPO_SETTING.lower() == "auto"
+FIXED = REPO_SETTING if REPO_SETTING.count("/") == 1 else ""
+REPO = FIXED  # the repository bare #123 means here; use(cwd) sets it for auto
 TRACKERS = {p.upper(): url for p, _, url in (pair.partition("=") for pair in SETTINGS.get("REF_LINKS_ITEMS", "").split())
             if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", p) and url.startswith("http") and "{n}" in url}
-CONFIGURED = bool(REPO or TRACKERS)
+CONFIGURED = bool(FIXED or AUTO or TRACKERS)
 
 # A label is a short one in parentheses, or the full title in quotes, optionally after ", titled".
 LABEL = r"[*_]{0,2}\s*\(|[*_]{0,2},?\s*(?:titled\s+)?[\"“]"
@@ -49,18 +52,28 @@ _PREFIXES = "|".join(sorted(map(re.escape, TRACKERS), key=len, reverse=True)) or
 ITEM_MENTION = re.compile(
     rf"\[(?P<lp>{_PREFIXES})-(?P<ln>\d+)\]\(https?://[^)\s]*\)(?P<ll>{LABEL})?"
     rf"|(?<![\w/-])(?P<bp>{_PREFIXES})-(?P<bn>\d+)\b(?P<bl>{LABEL})?")
-GH_LINK = r"\[#(\d{1,6})\]\(https://github\.com/[^)\s]*/(?:pull|issues)/\d+[^)\s]*\)"
-# Not after a word, a path, another # or a URL's ? or =, and not a color written as `color #333`.
-GH_MENTION = re.compile(rf"{GH_LINK}({LABEL})?|(?<![\w/\[&#?=])(?<!color )(?<!colour )#(\d{{1,6}})\b")
+NAME = r"[A-Za-z0-9][\w.-]*/[\w.-]*[A-Za-z0-9_]"  # owner/name
+GH_MENTION = re.compile(
+    rf"\[(?:{NAME})?#(?P<ln>\d{{1,6}})\]\(https://github\.com/(?P<lr>{NAME})/(?:pull|issues)/\d+[^)\s]*\)(?P<ll>{LABEL})?"
+    rf"|(?<![\w/.-])(?P<qr>{NAME})#(?P<qn>\d{{1,6}})\b"
+    # Not after a word, a path, another # or a URL's ? or =, and not a color written as `color #333`.
+    rf"|(?<![\w/\[&#?=])(?<!color )(?<!colour )#(?P<bn>\d{{1,6}})\b")
 
 
 def item_url(prefix: str, number: str) -> str:
     return TRACKERS[prefix.upper()].replace("{n}", number)
 
 
-def gh_url(number: str) -> str:
+def gh_url(ref: str) -> str:
     """Issues and pull requests share numbers; GitHub redirects /issues/n to /pull/n."""
-    return GH_KINDS.get(number, f"https://github.com/{REPO}/issues/{number}")
+    name, _, number = ref.partition("#")
+    return GH_URLS.get(ref.lower(), f"https://github.com/{name}/issues/{number}")
+
+
+def display(ref: str) -> str:
+    """#123 for the repository in use, owner/name#123 for any other."""
+    name, _, number = ref.partition("#")
+    return f"#{number}" if REPO and name.lower() == REPO.lower() else ref
 
 
 def _prose(text: str) -> str:
@@ -86,19 +99,25 @@ def item_problems(text: str) -> list[tuple[str, str]]:
 
 
 def gh_problems(text: str) -> list[tuple[str, str]]:
-    """Each (number, what is wrong) for an issue or pull request whose first mention is not a link with a label."""
-    if not REPO:
-        return []
+    """Each (owner/name#n, what is wrong) for an issue or pull request whose first mention is not a link with a
+    label. A bare #123 counts only when the repository in use is known."""
     seen, found = set(), []
     for m in GH_MENTION.finditer(_prose(text)):
-        number = m.group(1) or m.group(3)
-        if number in seen:
+        if m["ln"]:
+            ref, linked, labelled = f"{m['lr']}#{m['ln']}", True, m["ll"] is not None
+        elif m["qn"]:
+            ref, linked, labelled = f"{m['qr']}#{m['qn']}", False, False
+        elif REPO:
+            ref, linked, labelled = f"{REPO}#{m['bn']}", False, False
+        else:
             continue
-        seen.add(number)
-        if m.group(1) is None:
-            found.append((number, "first mention has no link"))
-        elif m.group(2) is None:
-            found.append((number, "no label"))
+        if ref.lower() in seen:
+            continue
+        seen.add(ref.lower())
+        if not linked:
+            found.append((ref, "first mention has no link"))
+        elif not labelled:
+            found.append((ref, "no label"))
     return found
 
 
@@ -117,14 +136,32 @@ def item_label(ref: str) -> str | None:
     return row[0] if row else None
 
 
+def repo_of(cwd: str | None) -> str:
+    """The GitHub owner/name of the checkout's origin, or ""."""
+    try:
+        ran = subprocess.run(["git", "-C", cwd or ".", "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    m = re.search(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$", ran.stdout.strip())
+    return m.group(1) if m else ""
+
+
+def use(cwd: str | None) -> None:
+    """Set the repository bare #123 means in this folder."""
+    global REPO
+    REPO = repo_of(cwd) if AUTO else FIXED
+
+
 def applies(cwd: str | None) -> bool:
-    """On once configured: in a checkout of a repository under REPO's owner, or everywhere with REF_LINKS_ALWAYS=1
-    (or when only trackers are set, since there is no owner to match)."""
+    """On once configured: everywhere with auto, trackers only, or REF_LINKS_ALWAYS=1; with a fixed repository,
+    in checkouts of repositories under its owner."""
+    use(cwd)
     if not CONFIGURED:
         return False
-    if SETTINGS.get("REF_LINKS_ALWAYS") == "1" or not REPO:
+    if SETTINGS.get("REF_LINKS_ALWAYS") == "1" or not FIXED:
         return True
-    owner = "github.com/" + REPO.split("/")[0] + "/"
+    owner = "github.com/" + FIXED.split("/")[0] + "/"
     try:
         ran = subprocess.run(["git", "-C", cwd or ".", "remote", "-v"], capture_output=True, text=True, timeout=3)
     except (OSError, subprocess.TimeoutExpired):
@@ -138,26 +175,27 @@ def short_label(title: str) -> str:
     return " ".join(title.split()[:5])
 
 
-NOT_FOUND = ""  # cached label for a number GitHub has no issue or pull request for
+NOT_FOUND = ""  # cached label for a reference GitHub has no issue or pull request for
 
 
-def _kinds() -> dict[str, str]:
-    return {k: row[2] for k, row in table(GH_TITLES).items() if len(row) > 2 and row[2]}
+def _urls() -> dict[str, str]:
+    return {k.lower(): row[2] for k, row in table(GH_TITLES).items() if len(row) > 2 and row[2]}
 
 
-GH_KINDS = _kinds()
+GH_URLS = _urls()
 
 
-def gh_label(number: str, deadline: float | None = None) -> str | None:
-    """An issue or pull request's label: from the cache, else from gh (then cached). NOT_FOUND when GitHub has none;
+def gh_label(ref: str, deadline: float | None = None) -> str | None:
+    """owner/name#n's label: from the cache, else from gh (then cached). NOT_FOUND when GitHub has none;
     None when it cannot be looked up (no gh, signed out, offline, or past the deadline)."""
-    known = table(GH_TITLES).get(number)
+    known = table(GH_TITLES).get(ref.upper())
     if known is not None:
         return known[0]
-    if not REPO or not shutil.which("gh") or (deadline is not None and time.monotonic() > deadline):
+    name, _, number = ref.partition("#")
+    if not shutil.which("gh") or (deadline is not None and time.monotonic() > deadline):
         return None
     try:
-        ran = subprocess.run(["gh", "api", f"repos/{REPO}/issues/{number}", "--jq", "[.title, .html_url]"],
+        ran = subprocess.run(["gh", "api", f"repos/{name}/issues/{number}", "--jq", "[.title, .html_url]"],
                              capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -168,8 +206,8 @@ def gh_label(number: str, deadline: float | None = None) -> str | None:
     else:
         title, url = json.loads(ran.stdout)
         label = short_label(title)
-        GH_KINDS[number] = url
+        GH_URLS[ref.lower()] = url
     CACHE.mkdir(parents=True, exist_ok=True)
     with GH_TITLES.open("a", encoding="utf-8") as f:
-        f.write(f"{number}\t{label}\t{title}\t{url}\n")
+        f.write(f"{ref}\t{label}\t{title}\t{url}\n")
     return label
